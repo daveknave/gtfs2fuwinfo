@@ -14,4 +14,4 @@ def pargroupby(gr, func, name = 'Multi Process', ncores = 1, args_dict = {}):
 
     pool.close()
     pool.join()
-    return(pd.DataFrame(out_li))
+    return(pd.DataFrame(data=out_li))
