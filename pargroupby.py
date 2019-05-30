@@ -3,6 +3,7 @@
 ### by daveknave
 import pandas as pd
 import multiprocessing as mp
+import time
 
 out_li = []
 
@@ -15,7 +16,6 @@ def do(gr, func, name = 'Multi Process', ncores = 1, args_dict = {}):
     pool.name = name
     for g in gr.groups:
         res_ = pool.apply_async(func, [gr.get_group(g), g], args_dict, append_result)
-
 
     pool.close()
     pool.join()

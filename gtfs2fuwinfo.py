@@ -2,7 +2,7 @@
 import pandas as pd
 import os, importlib
 import pargroupby
-from scipy.spatial.distance import hamming
+from scipy.spatial.distance import hamming, euclidean
 
 data_dir = './data/GTFS'
 
@@ -13,13 +13,11 @@ for f in os.listdir(data_dir):
     input_tables[f] = tmp_df
 
 tr_df = input_tables['trips.txt'].merge(input_tables['routes.txt'], on='route_id')
-tr_df = tr_df[(tr_df['agency_id'] == 796) & (tr_df['route_type'] == 700) & (tr_df['route_short_name'].str.get(0) == 'M')]
-# %%
+tr_df = tr_df[(tr_df['agency_id'] == 796) & (tr_df['route_type'] == 700)]
+
 ts_df = tr_df.merge(input_tables['stop_times.txt'], on='trip_id', how='left')
 ts_df['stop_id'] = '0' + ts_df['stop_id'].apply(str)
-str_df = ts_df.merge(input_tables['stops.txt'], on='stop_id')
-# %%
-print(str_df.shape)
+str_df = ts_df.merge(input_tables['stops.txt'], on='stop_id').drop_duplicates()
 # %%
 importlib.reload(pargroupby)
 def to_edge(x, g):
@@ -27,7 +25,7 @@ def to_edge(x, g):
 
     path_dist = 0
     for pt in range(x.shape[0] - 1):
-        path_dist += hamming(list(x.loc[:, ['stop_lat', 'stop_lon']].iloc[pt]), list(x.loc[:, ['stop_lat', 'stop_lon']].iloc[pt+1]))
+        path_dist += euclidean(list(x.loc[:, ['stop_lat', 'stop_lon']].iloc[pt]), list(x.loc[:, ['stop_lat', 'stop_lon']].iloc[pt+1]))
 
     return {
         'trip_id'       : x['trip_id'].iloc[0],
@@ -36,19 +34,65 @@ def to_edge(x, g):
         'dep'           : x['departure_time'].iloc[0],
         'to'            : x['stop_id'].iloc[-1],
         'arr'           : x['arrival_time'].iloc[-1],
-        'min_dwell'     : 0,
         'vehicle_type'  : x['route_type'].iloc[0],
-        'backshift'     : 0,
-        'forwardshift'  : 0,
         'distance'      : path_dist
     }
 
 sjdf = pargroupby.do(gr=str_df.groupby('trip_id'), func=to_edge, name='2edges', ncores=4)
-sjdf.to_csv('servicejourney.csv')
+# %%
+sjdf.to_csv('servicejourney.csv', index=False)
+# %%
+### $SERVICEJOURNEY
+### $SERVICEJOURNEY:ID;LineID;FromStopID;ToStopID;DepTime;ArrTime;MinAheadTime;MinLayoverTime;VehTypeGroupID;MaxShiftBackwardSeconds;MaxShiftForwardSeconds;Distance
+
+sjdf['min_dwell'] = 0
+sjdf['min_ahead'] = 0
+sjdf['backshift'] = 0
+sjdf['forwardshift'] = 0
+
+servicejourney = sjdf.rename(columns={
+    'trip_id'       : 'ID',
+    'route_id'      : 'LineID',
+    'from'          : 'FromStopID',
+    'to'            : 'ToStopID',
+    'dep'           : 'DepTime',
+    'arr'           : 'ArrTime',
+    'min_ahead'     : 'MinAheadTime',
+    'min_dwell'     : 'MinLayoverTime',
+    'vehicle_type'  : 'VehTypeGroupID',
+    'backshift'     : 'MaxShiftBackwardSeconds',
+    'forwardshift'  : 'MaxShiftForwardSeconds',
+    'distance'      : 'Distance',
+})
+
+servicejourney.to_csv('servicejourney.txt')
 # %%
 ### $STOPPOINTS
+### $STOPPOINT:ID;Code;Name;VehCapacityForCharging
+stoppoints = str_df[['stop_id', 'stop_code', 'stop_name', 'stop_lat', 'stop_lon']].drop_duplicates()
 
+stoppoints = stoppoints.rename(columns={
+    'stop_id'        : 'ID',
+    'stop_code'      : 'Code',
+    'stop_name'      : 'Name',
+    'stop_lat'      : 'Lat',
+    'stop_lon'      : 'Lon',
+})
+stoppoints['VehCapacityForCharging'] = 1
+stoppoints.to_csv('stoppoints.txt')
 # %%
-print('test')
-
-
+### $LINE
+### $LINE:ID;Code;Name
+line = str_df[['route_id', 'route_short_name']].drop_duplicates()
+line = line.rename(columns={
+    'route_id'              : 'ID',
+    'route_short_name'      : 'Code',
+})
+line['Name'] = line['Code']
+line.to_csv('line.txt')
+# %%
+### $DEADRUNTIME
+### $DEADRUNTIME:FromStopID;ToStopID;FromTime;ToTime;Distance;RunTime
+# Create Deadheadmatrix
+stoppoints['key'] = 1
+crossprod = stoppoints.merge(stoppoints, on="key")
