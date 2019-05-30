@@ -1,7 +1,7 @@
-
+#! /usr/bin/python3
 import pandas as pd
-import os
-from pargroupby import pargroupby
+import os, importlib
+import pargroupby
 from scipy.spatial.distance import hamming
 
 data_dir = './data/GTFS'
@@ -19,8 +19,9 @@ ts_df = tr_df.merge(input_tables['stop_times.txt'], on='trip_id', how='left')
 ts_df['stop_id'] = '0' + ts_df['stop_id'].apply(str)
 str_df = ts_df.merge(input_tables['stops.txt'], on='stop_id')
 # %%
-print(str_df)
+print(str_df.shape)
 # %%
+importlib.reload(pargroupby)
 def to_edge(x, g):
     x = x.sort_values('stop_sequence')
 
@@ -41,10 +42,8 @@ def to_edge(x, g):
         'forwardshift'  : 0,
         'distance'      : path_dist
     }
-sjdf = pargroupby(gr=str_df.head(1000).groupby('trip_id'), func=to_edge, name='2edges', ncores=6)
 
-print(sjdf.head(100))
-#%%
+sjdf = pargroupby.do(gr=str_df.groupby('trip_id'), func=to_edge, name='2edges', ncores=4)
 sjdf.to_csv('servicejourney.csv')
 # %%
 ### $STOPPOINTS
