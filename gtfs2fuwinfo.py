@@ -2,7 +2,9 @@
 import pandas as pd
 import os, importlib
 import pargroupby
+import dask
 from scipy.spatial.distance import hamming, euclidean
+import haversine
 
 data_dir = './data/GTFS'
 
@@ -18,6 +20,8 @@ tr_df = tr_df[(tr_df['agency_id'] == 796) & (tr_df['route_type'] == 700)]
 ts_df = tr_df.merge(input_tables['stop_times.txt'], on='trip_id', how='left')
 ts_df['stop_id'] = '0' + ts_df['stop_id'].apply(str)
 str_df = ts_df.merge(input_tables['stops.txt'], on='stop_id').drop_duplicates()
+del ts_df
+del tr_df
 # %%
 importlib.reload(pargroupby)
 def to_edge(x, g):
@@ -91,8 +95,24 @@ line = line.rename(columns={
 line['Name'] = line['Code']
 line.to_csv('line.txt')
 # %%
+sp_red = stoppoints[(stoppoints['ID'].isin(sjdf['from'])) | (stoppoints['ID'].isin(sjdf['to']))]
+print(sp_red.shape)
+# %%
 ### $DEADRUNTIME
 ### $DEADRUNTIME:FromStopID;ToStopID;FromTime;ToTime;Distance;RunTime
 # Create Deadheadmatrix
-stoppoints['key'] = 1
-crossprod = stoppoints.merge(stoppoints, on="key")
+sp_red['key'] = 1
+crossprod = sp_red.merge(sp_red, on="key")
+crossprod['distance'] = crossprod[crossprod['ID_x'] != crossprod['ID_y']].apply(lambda x: haversine.haversine([x['Lat_x'],x['Lon_x']],[x['Lat_y'],x['Lon_y']], unit=haversine.Unit.METERS), axis=1)
+
+crossprod = crossprod.rename(columns={
+    'ID_x'          : 'FromStopID',
+    'ID_y'          : 'ToStopID',
+    'distance'      : 'Distance',
+})
+crossprod['FromTime'] = 0
+crossprod['ToTime'] = 0
+crossprod['RunTime'] = 60 * crossprod['Distance'] / 25
+crossprod = crossprod[['FromStopID','ToStopID','FromTime','ToTime','Distance','RunTime']].drop_duplicates().dropna()[crossprod['Distance'] < 3000]
+crossprod.to_csv('deadruntime.txt')
+# %%
