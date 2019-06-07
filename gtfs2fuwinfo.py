@@ -3,7 +3,6 @@ import pandas as pd
 import os, importlib
 import pargroupby
 importlib.reload(pargroupby)
-import dask
 from scipy.spatial.distance import hamming, euclidean
 import haversine
 
@@ -26,6 +25,16 @@ str_df = ts_df.merge(input_tables['stops.txt'], on='stop_id').drop_duplicates()
 del ts_df
 del tr_df
 # %%
+### Interprete calendar
+cal = input_tables['calendar.txt']
+cal_exepctions = input_tables['calendar_dates.txt']
+cal['key'] = 1
+cal_exepctions['key'] = 1
+
+c_ce_df = cal.merge(cal_exepctions, on='key')
+pointintime = '2019-08-01'
+c_ce_df = c_ce_df[((c_ce_df['exception_type'] == '1') & (c_ce_df['date'] == pointintime)) | ]
+# %%
 def to_edge(x, g):
     x = x.sort_values('stop_sequence')
 
@@ -44,7 +53,7 @@ def to_edge(x, g):
         'distance'      : path_dist
     }
 
-sjdf = pargroupby.do(gr=str_df.groupby('trip_id'), func=to_edge, name='2edges', ncores=4)
+sjdf = pargroupby.do(gr=str_df.groupby('trip_id'), func=to_edge, name='2edges', ncores=7)
 
 ### $SERVICEJOURNEY
 ### $SERVICEJOURNEY:ID;LineID;FromStopID;ToStopID;DepTime;ArrTime;MinAheadTime;MinLayoverTime;VehTypeGroupID;MaxShiftBackwardSeconds;MaxShiftForwardSeconds;Distance
