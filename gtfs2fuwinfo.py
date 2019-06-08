@@ -1,6 +1,6 @@
 #! /usr/bin/python3
 import pandas as pd
-import os, importlib
+import os, importlib, datetime
 import pargroupby
 importlib.reload(pargroupby)
 from scipy.spatial.distance import hamming, euclidean
@@ -24,16 +24,22 @@ ts_df['stop_id'] = '0' + ts_df['stop_id'].apply(str)
 str_df = ts_df.merge(input_tables['stops.txt'], on='stop_id').drop_duplicates()
 del ts_df
 del tr_df
-# %%
-### Interprete calendar
-cal = input_tables['calendar.txt']
-cal_exepctions = input_tables['calendar_dates.txt']
-cal['key'] = 1
-cal_exepctions['key'] = 1
 
-c_ce_df = cal.merge(cal_exepctions, on='key')
+### Interprete calendar
+### https://developers.google.com/transit/gtfs/reference/#calendartxt
+### https://developers.google.com/transit/gtfs/reference/#calendar_datestxt
+cal = input_tables['calendar.txt']
+cal_exceptions = input_tables['calendar_dates.txt']
 pointintime = '2019-08-01'
-c_ce_df = c_ce_df[((c_ce_df['exception_type'] == '1') & (c_ce_df['date'] == pointintime)) | ]
+pit_dt = datetime.datetime.strptime(pointintime, '%Y-%m-%d')
+cal_exceptions['date'] = cal_exceptions['date'].apply(lambda x: datetime.datetime.strptime(str(x), '%Y%m%d'))
+
+cal_exceptions = cal_exceptions[cal_exceptions['date'] == pit_dt.strftime('%Y-%m-%d %H:%M:%S')]
+cal = cal[cal[pit_dt.strftime('%A').lower()] == 1]
+
+d = str_df.merge(cal, on='service_id').merge(cal_exceptions, how='left', on='service_id')
+d = d[d['exception_type'] != 2]
+
 # %%
 def to_edge(x, g):
     x = x.sort_values('stop_sequence')
@@ -53,7 +59,7 @@ def to_edge(x, g):
         'distance'      : path_dist
     }
 
-sjdf = pargroupby.do(gr=str_df.groupby('trip_id'), func=to_edge, name='2edges', ncores=7)
+sjdf = pargroupby.do(gr=d[str_df.columns].groupby('trip_id'), func=to_edge, name='2edges', ncores=4)
 
 ### $SERVICEJOURNEY
 ### $SERVICEJOURNEY:ID;LineID;FromStopID;ToStopID;DepTime;ArrTime;MinAheadTime;MinLayoverTime;VehTypeGroupID;MaxShiftBackwardSeconds;MaxShiftForwardSeconds;Distance
@@ -78,7 +84,7 @@ servicejourney = sjdf.rename(columns={
     'distance'      : 'Distance',
 })
 # %%
-servicejourney.to_csv('servicejourney.txt', index=False)
+servicejourney.to_csv('servicejourney.txt', index=False, sep=';')
 # %%
 ### $STOPPOINTS
 ### $STOPPOINT:ID;Code;Name;VehCapacityForCharging
@@ -133,7 +139,7 @@ stoppoints = stoppoints.append({
 
 stoppoints = stoppoints.append({
     'ID'    : 900000000005,
-    'Code'  : 'DEPOT',
+    'Code'  : 'DEPOT ',
     'Name'  : 'Betriebshof Neukölln',
     'Lat'   : 52.453568,
     'Lon'   : 13.422036,
@@ -149,7 +155,7 @@ stoppoints = stoppoints.append({
     'VehCapacityForCharging' : 120
 }, ignore_index=True)
 
-stoppoints.to_csv('stoppoints.txt', index=False)
+stoppoints.to_csv('stoppoints.txt', index=False, sep=';')
 # %%
 ### $LINE
 ### $LINE:ID;Code;Name
@@ -159,15 +165,15 @@ line = line.rename(columns={
     'route_short_name'      : 'Code',
 })
 line['Name'] = line['Code']
-line.to_csv('line.txt', index=False)
+line.to_csv('line.txt', index=False, sep=';')
 
 # %%
 ### $DEADRUNTIME
 ### $DEADRUNTIME:FromStopID;ToStopID;FromTime;ToTime;Distance;RunTime
 
-stoppoints = pd.read_csv('stoppoints.txt')
+stoppoints = pd.read_csv('stoppoints.txt', sep=';')
 
-sjdf = pd.read_csv('servicejourney.txt')
+sjdf = pd.read_csv('servicejourney.txt', sep=';')
 sp_red = stoppoints[(stoppoints['ID'].isin(sjdf['FromStopID'])) | (stoppoints['ID'].isin(sjdf['ToStopID'])) | (stoppoints['Code'] == 'DEPOT')]
 
 # Create Deadhead matrix
@@ -185,7 +191,7 @@ crossprod['FromTime'] = 0
 crossprod['ToTime'] = 0
 crossprod['RunTime'] = 60 * crossprod['Distance'] / 25
 crossprod = crossprod[['FromStopID','ToStopID','FromTime','ToTime','Distance','RunTime']].drop_duplicates().dropna()[crossprod['Distance'] < 3000]
-crossprod.to_csv('deadruntime.txt', index=False)
+crossprod.to_csv('deadruntime.txt', index=False, sep=';')
 # %%
 ### $CONNECTIONS
 ### https://developers.google.com/transit/gtfs/reference/#transferstxt
@@ -203,6 +209,6 @@ connections = connections.rename(columns={
     'min_transfer_time'     : 'MinTransferTime',
 })
 
-connections[['FromStopID','ToStopID','FromLineID','ToLineID','MinTransferTime']].to_csv('connections.txt', index=False)
+connections[['FromStopID','ToStopID','FromLineID','ToLineID','MinTransferTime']].to_csv('connections.txt', index=False, sep=';')
 # %%
 
