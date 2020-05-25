@@ -1,4 +1,4 @@
-#! /usr/bin/python3
+#! /usr/bin/python3.8
 import pandas as pd
 import os, importlib, datetime
 import pargroupby
@@ -8,10 +8,11 @@ import haversine
 
 # %%
 ### Read GTFS data files
-data_dir = './data/GTFS'
+data_dir = './data/GTFS/20190805'
 
 input_tables = {}
 for f in os.listdir(data_dir):
+    if not '.txt' in f: continue
     tmp_df = pd.read_csv(data_dir + '/' + f, delimiter=',', decimal='.', quotechar='"')
     input_tables[f] = tmp_df
 
