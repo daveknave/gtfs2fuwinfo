@@ -14,6 +14,7 @@ def append_result(res_):
 def do(gr, func, name = 'Multi Process', ncores = 1, args_dict = {}):
     pool = mp.Pool(ncores)
     pool.name = name
+    print(gr.groups)
     for g in gr.groups:
         res_ = pool.apply_async(func, [gr.get_group(g), g], args_dict, append_result)
 

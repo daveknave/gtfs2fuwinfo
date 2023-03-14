@@ -4,11 +4,14 @@ import os, importlib, datetime
 import pargroupby
 importlib.reload(pargroupby)
 from scipy.spatial.distance import hamming, euclidean
-import haversine
+
+import retrieve_deadruntime as drt
+importlib.reload(drt)
+# import haversine
 
 # %%
 ### Read GTFS data files
-data_dir = './data/GTFS/20190805'
+data_dir = './data'
 
 input_tables = {}
 for f in os.listdir(data_dir):
@@ -18,30 +21,32 @@ for f in os.listdir(data_dir):
 
 ### Prepare data
 tr_df = input_tables['trips.txt'].merge(input_tables['routes.txt'], on='route_id')
-tr_df = tr_df[(tr_df['agency_id'] == 796) & (tr_df['route_type'] == 700)] ### Select BVG Bus-Services
+tr_df = tr_df[(tr_df['agency_id'] == 796) & (tr_df['route_type'] == 700)]
 
+### Select BVG Bus-Services
 ts_df = tr_df.merge(input_tables['stop_times.txt'], on='trip_id', how='left')
-ts_df['stop_id'] = '0' + ts_df['stop_id'].apply(str)
+ts_df['stop_id'] = ts_df['stop_id'].apply(str)
 str_df = ts_df.merge(input_tables['stops.txt'], on='stop_id').drop_duplicates()
-del ts_df
-del tr_df
-
+#%%
 ### Interprete calendar
-### https://developers.google.com/transit/gtfs/reference/#calendartxt
-### https://developers.google.com/transit/gtfs/reference/#calendar_datestxt
-cal = input_tables['calendar.txt']
-cal_exceptions = input_tables['calendar_dates.txt']
-pointintime = '2019-08-01'
+cal = input_tables['calendar.txt'].copy()
+cal_exceptions = input_tables['calendar_dates.txt'].copy()
+pointintime = '2023-03-24'
 pit_dt = datetime.datetime.strptime(pointintime, '%Y-%m-%d')
 cal_exceptions['date'] = cal_exceptions['date'].apply(lambda x: datetime.datetime.strptime(str(x), '%Y%m%d'))
 
-cal_exceptions = cal_exceptions[cal_exceptions['date'] == pit_dt.strftime('%Y-%m-%d %H:%M:%S')]
+cal_exceptions = cal_exceptions[cal_exceptions['date'] == pit_dt.strftime('%Y%m%d')]
 cal = cal[cal[pit_dt.strftime('%A').lower()] == 1]
 
-d = str_df.merge(cal, on='service_id').merge(cal_exceptions, how='left', on='service_id')
+
+d = str_df.merge(cal, on='service_id')
+d = d.merge(cal_exceptions, how='left', on='service_id')
+
 d = d[d['exception_type'] != 2]
 
 # %%
+
+str_df = str_df.sort_values(['trip_id', 'stop_sequence'])
 def to_edge(x, g):
     x = x.sort_values('stop_sequence')
 
@@ -50,17 +55,18 @@ def to_edge(x, g):
         path_dist += euclidean(list(x.loc[:, ['stop_lat', 'stop_lon']].iloc[pt]), list(x.loc[:, ['stop_lat', 'stop_lon']].iloc[pt+1]))
 
     return {
-        'trip_id'       : x['trip_id'].iloc[0],
-        'route_id'      : x['route_id'].iloc[0],
-        'from'          : x['stop_id'].iloc[0],
-        'dep'           : x['departure_time'].iloc[0],
-        'to'            : x['stop_id'].iloc[-1],
-        'arr'           : x['arrival_time'].iloc[-1],
-        'vehicle_type'  : x['route_type'].iloc[0],
-        'distance'      : path_dist
+        'service_id':          x['service_id'].iloc[0],
+        'trip_id':          x['trip_id'].iloc[0],
+        'route_id':         x['route_id'].iloc[0],
+        'from':             x['stop_id'].iloc[0],
+        'dep':              x['departure_time'].iloc[0],
+        'to':               x['stop_id'].iloc[-1],
+        'arr':              x['arrival_time'].iloc[-1],
+        'vehicle_type':     x['route_type'].iloc[0],
+        'distance':         path_dist
     }
 
-sjdf = pargroupby.do(gr=d[str_df.columns].groupby('trip_id'), func=to_edge, name='2edges', ncores=4)
+sjdf = pargroupby.do(gr=str_df[str_df.columns].groupby('trip_id'), func=to_edge, name='2edges', ncores=8)
 
 ### $SERVICEJOURNEY
 ### $SERVICEJOURNEY:ID;LineID;FromStopID;ToStopID;DepTime;ArrTime;MinAheadTime;MinLayoverTime;VehTypeGroupID;MaxShiftBackwardSeconds;MaxShiftForwardSeconds;Distance
@@ -84,7 +90,7 @@ servicejourney = sjdf.rename(columns={
     'forwardshift'  : 'MaxShiftForwardSeconds',
     'distance'      : 'Distance',
 })
-# %%
+#%%
 servicejourney.to_csv('servicejourney.txt', index=False, sep=';')
 # %%
 ### $STOPPOINTS
@@ -180,18 +186,22 @@ sp_red = stoppoints[(stoppoints['ID'].isin(sjdf['FromStopID'])) | (stoppoints['I
 # Create Deadhead matrix
 sp_red['key'] = 1
 crossprod = sp_red.merge(sp_red, on="key")
-crossprod['distance'] = crossprod[crossprod['ID_x'] != crossprod['ID_y']].\
-    apply(lambda x: haversine.haversine([x['Lat_x'],x['Lon_x']],[x['Lat_y'],x['Lon_y']], unit=haversine.Unit.METERS), axis=1)
+real_routes = crossprod[crossprod['ID_x'] != crossprod['ID_y']]\
+    .apply(lambda x: pd.Series(drt.run_request(','.join([str(x['Lat_x']),str(x['Lon_x'])]),','.join([str(x['Lat_y']),str(x['Lon_y'])]), '2023-03-24T12:00:00'), MISSING_HERE_APIKEY), axis=1)
+crossprod = pd.concat([crossprod,real_routes], axis=1)
+
+# apply(lambda x: haversine.haversine([x['Lat_x'],x['Lon_x']],[x['Lat_y'],x['Lon_y']], unit=haversine.Unit.METERS), axis=1)
 
 crossprod = crossprod.rename(columns={
     'ID_x'          : 'FromStopID',
     'ID_y'          : 'ToStopID',
-    'distance'      : 'Distance',
+    'length'      : 'Distance',
+    'duration'      : 'RunTime',
 })
 crossprod['FromTime'] = 0
 crossprod['ToTime'] = 0
-crossprod['RunTime'] = 60 * crossprod['Distance'] / 25
-crossprod = crossprod[['FromStopID','ToStopID','FromTime','ToTime','Distance','RunTime']].drop_duplicates().dropna()[crossprod['Distance'] < 3000]
+# crossprod['RunTime'] = 60 * crossprod['Distance'] / 25
+crossprod = crossprod[['FromStopID','ToStopID','FromTime','ToTime','Distance','RunTime']].drop_duplicates().dropna()
 crossprod.to_csv('deadruntime.txt', index=False, sep=';')
 # %%
 ### $CONNECTIONS
