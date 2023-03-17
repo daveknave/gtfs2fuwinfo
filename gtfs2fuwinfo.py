@@ -23,39 +23,50 @@ for f in os.listdir(data_dir):
 tr_df = input_tables['trips.txt'].merge(input_tables['routes.txt'], on='route_id')
 tr_df = tr_df[(tr_df['agency_id'] == 796) & (tr_df['route_type'] == 700)]
 
-### Select BVG Bus-Services
-ts_df = tr_df.merge(input_tables['stop_times.txt'], on='trip_id', how='left')
-ts_df['stop_id'] = ts_df['stop_id'].apply(str)
-str_df = ts_df.merge(input_tables['stops.txt'], on='stop_id').drop_duplicates()
 #%%
 ### Interprete calendar
 cal = input_tables['calendar.txt'].copy()
+cal['start_date'] = cal['start_date'].apply(lambda x: datetime.datetime.strptime(str(x), '%Y%m%d'))
+cal['end_date'] = cal['end_date'].apply(lambda x: datetime.datetime.strptime(str(x), '%Y%m%d'))
+
 cal_exceptions = input_tables['calendar_dates.txt'].copy()
-pointintime = '2023-03-24'
-pit_dt = datetime.datetime.strptime(pointintime, '%Y-%m-%d')
 cal_exceptions['date'] = cal_exceptions['date'].apply(lambda x: datetime.datetime.strptime(str(x), '%Y%m%d'))
 
+pointintime = '2023-03-24'
+pit_dt = datetime.datetime.strptime(pointintime, '%Y-%m-%d')
+
 cal_exceptions = cal_exceptions[cal_exceptions['date'] == pit_dt.strftime('%Y%m%d')]
-cal = cal[cal[pit_dt.strftime('%A').lower()] == 1]
+cal = cal[(cal[pit_dt.strftime('%A').lower()] == 1) & (cal['start_date'] <= pit_dt) & (pit_dt <= cal['end_date'])]
 
 
-d = str_df.merge(cal, on='service_id')
-d = d.merge(cal_exceptions, how='left', on='service_id')
+d1 = tr_df.merge(cal, how='inner', on='service_id').set_index('trip_id')
+d2 = tr_df.merge(cal_exceptions, how='inner', on='service_id').set_index('trip_id')
+# d1 = d1.append(d2.drop([ind for ind in d2.index if ind in d1.index]))
+print(d1.shape, d2.shape)
 
-d = d[d['exception_type'] != 2]
+tr_df = tr_df.set_index('trip_id')
+tr_df['valid'] = False
+tr_df.loc[d1.index] = True
+tr_df.loc[d2[d2['exception_type'] == 1].index, 'valid'] = True
+tr_df.loc[d2[d2['exception_type'] == 2].index, 'valid'] = False
+
+
+#%%
+
+### Select BVG Bus-Services
+ts_df = tr_df[tr_df['valid']].merge(input_tables['stop_times.txt'], on='trip_id', how='left')
+ts_df['stop_id'] = ts_df['stop_id'].apply(str)
+str_df = ts_df.merge(input_tables['stops.txt'], on='stop_id').drop_duplicates().sort_values(['trip_id', 'stop_sequence'])
 
 # %%
 
-str_df = str_df.sort_values(['trip_id', 'stop_sequence'])
 def to_edge(x, g):
-    x = x.sort_values('stop_sequence')
-
     path_dist = 0
     for pt in range(x.shape[0] - 1):
         path_dist += euclidean(list(x.loc[:, ['stop_lat', 'stop_lon']].iloc[pt]), list(x.loc[:, ['stop_lat', 'stop_lon']].iloc[pt+1]))
 
     return {
-        'service_id':          x['service_id'].iloc[0],
+        'service_id':       x['service_id'].iloc[0],
         'trip_id':          x['trip_id'].iloc[0],
         'route_id':         x['route_id'].iloc[0],
         'from':             x['stop_id'].iloc[0],
@@ -66,7 +77,7 @@ def to_edge(x, g):
         'distance':         path_dist
     }
 
-sjdf = pargroupby.do(gr=str_df[str_df.columns].groupby('trip_id'), func=to_edge, name='2edges', ncores=8)
+sjdf = pargroupby.do(gr=str_df[str_df.columns].groupby('trip_id'), func=to_edge, name='2edges', ncores=7)
 
 ### $SERVICEJOURNEY
 ### $SERVICEJOURNEY:ID;LineID;FromStopID;ToStopID;DepTime;ArrTime;MinAheadTime;MinLayoverTime;VehTypeGroupID;MaxShiftBackwardSeconds;MaxShiftForwardSeconds;Distance
