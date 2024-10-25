@@ -9,7 +9,7 @@ import retrieve_deadruntime as drt
 importlib.reload(drt)
 import multiprocessing as mp
 import haversine
-
+import yaml
 
 def to_edge(x, g=None):
     path_dist = 0
@@ -29,20 +29,21 @@ def to_edge(x, g=None):
         'distance': path_dist
     })
 # %%
-def do_the_magic():
+
+def do_the_magic(config):
     global to_edge
     ### Read GTFS data files
-    data_dir = './data'
+    data_dir = config['in_directory']
 
     input_tables = {}
     for f in os.listdir(data_dir):
         if not '.txt' in f: continue
-        tmp_df = pd.read_csv(data_dir + '/' + f, delimiter=',', decimal='.', quotechar='"')
+        tmp_df = pd.read_csv(os.path.join(data_dir, f), delimiter=',', decimal='.', quotechar='"')
         input_tables[f] = tmp_df
 
     ### Prepare data
     tr_df = input_tables['trips.txt'].merge(input_tables['routes.txt'], on='route_id')
-    tr_df = tr_df[(tr_df['agency_id'] == 796) & (tr_df['route_type'] == 700)].head(500)
+    tr_df = tr_df[(tr_df['agency_id'] == config['agency']) & (tr_df['route_type'] == config['veh_type'])].head(100)
 
     ### Interprete calendar
     cal = input_tables['calendar.txt'].copy()
@@ -52,8 +53,7 @@ def do_the_magic():
     cal_exceptions = input_tables['calendar_dates.txt'].copy()
     cal_exceptions['date'] = cal_exceptions['date'].apply(lambda x: datetime.datetime.strptime(str(x), '%Y%m%d'))
 
-    pointintime = '2024-10-24'
-    pit_dt = datetime.datetime.strptime(pointintime, '%Y-%m-%d')
+    pit_dt = datetime.datetime.strptime(config['point_in_time'], '%Y-%m-%d')
 
     cal_exceptions = cal_exceptions[cal_exceptions['date'] == pit_dt.strftime('%Y%m%d')]
     cal = cal[(cal[pit_dt.strftime('%A').lower()] == 1) & (cal['start_date'] <= pit_dt) & (pit_dt <= cal['end_date'])]
@@ -102,7 +102,7 @@ def do_the_magic():
         'distance'      : 'Distance',
     })
 
-    servicejourney.to_csv('servicejourney.txt', index=False, sep=';')
+    servicejourney.to_csv(os.path.join(config['out_directory'],'servicejourney.txt'), index=False, sep=';')
 
     ### $STOPPOINTS
     ### $STOPPOINT:ID;Code;Name;VehCapacityForCharging
@@ -175,7 +175,7 @@ def do_the_magic():
 
     }])], axis=0)
 
-    stoppoints.to_csv('stoppoints.txt', index=False, sep=';')
+    stoppoints.to_csv(os.path.join(config['out_directory'],'stoppoints.txt'), index=False, sep=';')
     # %%
     ### $LINE
     ### $LINE:ID;Code;Name
@@ -185,28 +185,47 @@ def do_the_magic():
         'route_short_name'      : 'Code',
     })
     line['Name'] = line['Code']
-    line.to_csv('line.txt', index=False, sep=';')
+    line.to_csv(os.path.join(config['out_directory'],'line.txt'), index=False, sep=';')
 
     # %%
     ### $DEADRUNTIME
     ### $DEADRUNTIME:FromStopID;ToStopID;FromTime;ToTime;Distance;RunTime
 
-    stoppoints = pd.read_csv('stoppoints.txt', sep=';')
+    stoppoints = pd.read_csv(os.path.join(config['out_directory'],'stoppoints.txt'), sep=';')
 
-    sjdf = pd.read_csv('servicejourney.txt', sep=';')
+    sjdf = pd.read_csv(os.path.join(config['out_directory'],'servicejourney.txt'), sep=';')
     sp_red = stoppoints[(stoppoints['ID'].isin(sjdf['FromStopID'])) | (stoppoints['ID'].isin(sjdf['ToStopID'])) | (stoppoints['Code'] == 'DEPOT')]
 
     # Create Deadhead matrix
     sp_red['key'] = 1
     crossprod = sp_red.merge(sp_red, on="key")
-    # real_routes = crossprod[crossprod['ID_x'] != crossprod['ID_y']]\
-    #     .apply(lambda x: pd.Series(drt.run_request(','.join([str(x['Lat_x']),str(x['Lon_x'])]),','.join([str(x['Lat_y']),str(x['Lon_y'])]), '2024-10-24T12:00:00'), MISSING_HERE_APIKEY), axis=1)
-    # crossprod = pd.concat([crossprod,real_routes], axis=1)
 
-    fake_routes = crossprod[crossprod['ID_x'] != crossprod['ID_y']]\
-        .apply(lambda x: haversine.haversine([x['Lat_x'],x['Lon_x']],[x['Lat_y'],x['Lon_y']], unit=haversine.Unit.METERS), axis=1)
-    fake_routes.name = 'length'
-    crossprod = pd.concat([crossprod,fake_routes], axis=1)
+    od_matrix = pd.DataFrame(columns=['start', 'destination'])
+    od_matrix['start'] = crossprod.loc[crossprod['ID_x'] != crossprod['ID_y'], :].apply(lambda x: ','.join([str(x['Lat_x']),str(x['Lon_x'])]), axis=1)
+    od_matrix['destination'] = crossprod.loc[crossprod['ID_x'] != crossprod['ID_y'], :].apply(lambda x: ','.join([str(x['Lat_y']),str(x['Lon_y'])]), axis=1)
+
+    page = 0
+    while (page+1)*100 < od_matrix.shape[0]:
+        print((page)*100, (page+1)*100, od_matrix.shape[0])
+        tmp_df = drt.run_matrix_request(
+            od_matrix.iloc[page*100:min(od_matrix.shape[0]-1-page*100, (page+1)*100)],
+            config['point_in_time'] + 'T12:00:00',
+            config['here_key']
+        )
+        print(tmp_df)
+        page += 1
+    # real_routes = crossprod[crossprod['ID_x'] != crossprod['ID_y']]\
+    #     .apply(lambda x: pd.Series(drt.run_request(','.join([str(x['Lat_x']),str(x['Lon_x'])]),
+    #                                                ','.join([str(x['Lat_y']),str(x['Lon_y'])]),
+    #                                                config['point_in_time'] + 'T12:00:00',
+    #                                                config['here_key']
+    #                                                )), axis=1)
+    crossprod = pd.concat([crossprod,real_routes], axis=1)
+
+    # fake_routes = crossprod[crossprod['ID_x'] != crossprod['ID_y']]\
+    #     .apply(lambda x: haversine.haversine([x['Lat_x'],x['Lon_x']],[x['Lat_y'],x['Lon_y']], unit=haversine.Unit.METERS), axis=1)
+    # fake_routes.name = 'length'
+    # crossprod = pd.concat([crossprod,fake_routes], axis=1)
     crossprod['duration'] = 60 * crossprod['length'] / 25
 
     crossprod = crossprod.rename(columns={
@@ -218,7 +237,7 @@ def do_the_magic():
     crossprod['FromTime'] = 0
     crossprod['ToTime'] = 0
     crossprod = crossprod[['FromStopID','ToStopID','FromTime','ToTime','Distance','RunTime']].drop_duplicates().dropna()
-    crossprod.to_csv('deadruntime.txt', index=False, sep=';')
+    crossprod.to_csv(os.path.join(config['out_directory'],'deadruntime.txt'), index=False, sep=';')
 
     ### $CONNECTIONS
     ### $CONNECTIONS:FromStopID;ToStopID;FromLineID;ToLineID;MinTransferTime
@@ -233,9 +252,12 @@ def do_the_magic():
         'to_route_id'           : 'ToLineID',
         'min_transfer_time'     : 'MinTransferTime',
     })
-    connections[['FromStopID','ToStopID','FromLineID','ToLineID','MinTransferTime']].to_csv('connections.txt', index=False, sep=';')
+    connections[['FromStopID','ToStopID','FromLineID','ToLineID','MinTransferTime']].to_csv(os.path.join(config['out_directory'],'connections.txt'), index=False, sep=';')
 
 
 if __name__ == '__main__':
     mp.freeze_support()
-    do_the_magic()
+    with open('config.yaml', 'r') as fh:
+        config = yaml.load(fh, Loader=yaml.FullLoader)
+
+    do_the_magic(config)
