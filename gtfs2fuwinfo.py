@@ -10,8 +10,27 @@ importlib.reload(drt)
 import multiprocessing as mp
 import haversine
 
+
+def to_edge(x, g=None):
+    path_dist = 0
+    for pt in range(x.shape[0] - 1):
+        path_dist += haversine.haversine(list(x.loc[:, ['stop_lat', 'stop_lon']].iloc[pt]),
+                               list(x.loc[:, ['stop_lat', 'stop_lon']].iloc[pt + 1]))
+
+    return pd.Series({
+        'service_id': x['service_id'].iloc[0],
+        'trip_id': x['trip_id'].iloc[0],
+        'route_id': x['route_id'].iloc[0],
+        'from': x['stop_id'].iloc[0],
+        'dep': x['departure_time'].iloc[0],
+        'to': x['stop_id'].iloc[-1],
+        'arr': x['arrival_time'].iloc[-1],
+        'vehicle_type': x['route_type'].iloc[0],
+        'distance': path_dist
+    })
 # %%
 def do_the_magic():
+    global to_edge
     ### Read GTFS data files
     data_dir = './data'
 
@@ -25,7 +44,6 @@ def do_the_magic():
     tr_df = input_tables['trips.txt'].merge(input_tables['routes.txt'], on='route_id')
     tr_df = tr_df[(tr_df['agency_id'] == 796) & (tr_df['route_type'] == 700)].head(500)
 
-    #%%
     ### Interprete calendar
     cal = input_tables['calendar.txt'].copy()
     cal['start_date'] = cal['start_date'].apply(lambda x: datetime.datetime.strptime(str(x), '%Y%m%d'))
@@ -52,39 +70,18 @@ def do_the_magic():
     tr_df.loc[d2[d2['exception_type'] == 1].index, 'valid'] = True
     tr_df.loc[d2[d2['exception_type'] == 2].index, 'valid'] = False
 
-
-    #%%
-
     ### Select BVG Bus-Services
     ts_df = tr_df[tr_df['valid']].merge(input_tables['stop_times.txt'], on='trip_id', how='left')
     ts_df['stop_id'] = ts_df['stop_id'].apply(str)
     str_df = ts_df.merge(input_tables['stops.txt'], on='stop_id').drop_duplicates().sort_values(['trip_id', 'stop_sequence'])
 
-    # %%
-
-    def to_edge(x, g=None):
-        path_dist = 0
-        for pt in range(x.shape[0] - 1):
-            path_dist += haversine(list(x.loc[:, ['stop_lat', 'stop_lon']].iloc[pt]), list(x.loc[:, ['stop_lat', 'stop_lon']].iloc[pt+1]))
-
-        return pd.Series({
-            'service_id':       x['service_id'].iloc[0],
-            'trip_id':          x['trip_id'].iloc[0],
-            'route_id':         x['route_id'].iloc[0],
-            'from':             x['stop_id'].iloc[0],
-            'dep':              x['departure_time'].iloc[0],
-            'to':               x['stop_id'].iloc[-1],
-            'arr':              x['arrival_time'].iloc[-1],
-            'vehicle_type':     x['route_type'].iloc[0],
-            'distance':         path_dist
-        })
-
     sjdf = pargroupby.do(gr=str_df[str_df.columns].groupby('trip_id'), func=to_edge, name='2edges', ncores=7)
     # sjdf = str_df.groupby('trip_id', as_index=False).apply(lambda x: to_edge(x))
 
+    ### Generate Output-Data
+
     ### $SERVICEJOURNEY
     ### $SERVICEJOURNEY:ID;LineID;FromStopID;ToStopID;DepTime;ArrTime;MinAheadTime;MinLayoverTime;VehTypeGroupID;MaxShiftBackwardSeconds;MaxShiftForwardSeconds;Distance
-
     sjdf['min_dwell'] = 0
     sjdf['min_ahead'] = 0
     sjdf['backshift'] = 0
@@ -104,9 +101,9 @@ def do_the_magic():
         'forwardshift'  : 'MaxShiftForwardSeconds',
         'distance'      : 'Distance',
     })
-    #%%
+
     servicejourney.to_csv('servicejourney.txt', index=False, sep=';')
-    # %%
+
     ### $STOPPOINTS
     ### $STOPPOINT:ID;Code;Name;VehCapacityForCharging
     stoppoints = str_df[['stop_id', 'stop_code', 'stop_name', 'stop_lat', 'stop_lon']].drop_duplicates()
@@ -208,7 +205,9 @@ def do_the_magic():
 
     fake_routes = crossprod[crossprod['ID_x'] != crossprod['ID_y']]\
         .apply(lambda x: haversine.haversine([x['Lat_x'],x['Lon_x']],[x['Lat_y'],x['Lon_y']], unit=haversine.Unit.METERS), axis=1)
+    fake_routes.name = 'length'
     crossprod = pd.concat([crossprod,fake_routes], axis=1)
+    crossprod['duration'] = 60 * crossprod['length'] / 25
 
     crossprod = crossprod.rename(columns={
         'ID_x'          : 'FromStopID',
@@ -218,15 +217,12 @@ def do_the_magic():
     })
     crossprod['FromTime'] = 0
     crossprod['ToTime'] = 0
-    # crossprod['RunTime'] = 60 * crossprod['Distance'] / 25
     crossprod = crossprod[['FromStopID','ToStopID','FromTime','ToTime','Distance','RunTime']].drop_duplicates().dropna()
     crossprod.to_csv('deadruntime.txt', index=False, sep=';')
-    # %%
-    ### $CONNECTIONS
-    ### https://developers.google.com/transit/gtfs/reference/#transferstxt
+
     ### $CONNECTIONS
     ### $CONNECTIONS:FromStopID;ToStopID;FromLineID;ToLineID;MinTransferTime
-
+    ### https://developers.google.com/transit/gtfs/reference/#transferstxt
     connections = input_tables['transfers.txt'].copy()
     connections = connections[ (connections['from_stop_id'].isin(stoppoints['ID'])) & (connections['to_stop_id'].isin(stoppoints['ID'])) & (connections['transfer_type'] == 1)]
 
@@ -237,9 +233,8 @@ def do_the_magic():
         'to_route_id'           : 'ToLineID',
         'min_transfer_time'     : 'MinTransferTime',
     })
-
     connections[['FromStopID','ToStopID','FromLineID','ToLineID','MinTransferTime']].to_csv('connections.txt', index=False, sep=';')
-    # %%
+
 
 if __name__ == '__main__':
     mp.freeze_support()

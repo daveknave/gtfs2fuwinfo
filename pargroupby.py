@@ -12,20 +12,18 @@ finished_groups = mp.Value('i', 0)
 total_groups = 0
 
 def append_result(res_):
-    global finished_groups
+    global finished_groups, out_li
     finished_groups.value += 1
     percent = finished_groups.value/total_groups * 100.0
 
-    print(end='\r')
-    print(str(math.floor(percent)) + ' %')
+    sys.stdout.write(str(math.floor(percent)) + ' % \r')
+    sys.stdout.flush()
 
     out_li.append(res_)
 
 def error_occurred(e):
-    print('error')
-
-    print(dir(e), "\n")
-    print("-->{}<--".format(e.__cause__))
+    raise(e)
+    print("-->{}<--".format(e))
 
 # parralel groupby
 def do(gr, func, name = 'Multi Process', ncores = 1, args_dict = {}):
