@@ -1,0 +1,12 @@
+data/
+env/
+result/
+*.txt
+
+# IDE-specific config files
+.idea/
+.vscode/
+
+__pycache__/
+
+config.yaml

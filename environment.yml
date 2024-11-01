@@ -1,0 +1,22 @@
+name: loading_GTFS_data
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11.9
+  - pandas
+  - mypy
+  - pip
+  - pip:
+      - haversine
+      - scipy
+      - requests
+      - pyyaml  
+      - loguru
+#  code formatting and linter      
+  - black
+  - flake8
+  - isort
+  - pylint
+
+# creating env in env dir
+prefix: ./env
