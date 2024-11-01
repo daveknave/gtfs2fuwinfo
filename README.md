@@ -3,11 +3,12 @@
 
 # First time using it 
 
-1.
-conda env create -f environment.yml
+1. conda env create -f environment.yml
 
-2. Dependencies should be in /env directory
-conda activate ./env
+
+2. conda activate ./env
+
+(Dependencies should be in /env directory)
 
 -----------------------------
 # After adding library 

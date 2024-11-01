@@ -310,7 +310,7 @@ def do_the_magic(config):
         (stoppoints["ID"].isin(sjdf["FromStopID"]))
         | (stoppoints["ID"].isin(sjdf["ToStopID"]))
         | (stoppoints["Code"] == "DEPOT")
-    ]
+    ].copy()
 
     # Create Deadhead matrix
     sp_red["key"] = 1
