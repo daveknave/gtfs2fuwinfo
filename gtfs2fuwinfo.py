@@ -3,15 +3,16 @@ import pandas as pd
 import os, importlib, datetime
 import pargroupby
 
-importlib.reload(pargroupby)
+# importlib.reload(pargroupby)
 from scipy.spatial.distance import hamming, euclidean
 
 import retrieve_deadruntime as drt
 
-importlib.reload(drt)
+# importlib.reload(drt)
 import multiprocessing as mp
 import haversine
 import yaml
+from loguru import logger
 
 
 def to_edge(x, g=None):
@@ -37,9 +38,6 @@ def to_edge(x, g=None):
     )
 
 
-# %%
-
-
 def do_the_magic(config):
     global to_edge
     ### Read GTFS data files
@@ -54,15 +52,31 @@ def do_the_magic(config):
         )
         input_tables[f] = tmp_df
 
-    ### Prepare data
-    tr_df = input_tables["trips.txt"].merge(input_tables["routes.txt"], on="route_id")
+    ### Merge trips and routes
+    try:
+        tr_df = input_tables["trips.txt"].merge(
+            input_tables["routes.txt"], on="route_id"
+        )
+        if tr_df.empty:
+            logger.error(
+                "Der resultierende DataFrame 'tr_df' ist leer nach dem Mergen von 'trips.txt' und 'routes.txt'."
+            )
+            return
+    except KeyError as e:
+        logger.error(f"Fehlende Spalte beim Mergen: {e}")
+        return
+    except Exception as e:
+        logger.error(f"Fehler beim Mergen der DataFrames: {e}")
+        return
+
     tr_df = tr_df[
         (tr_df["agency_id"] == config["agency"])
         & (tr_df["route_type"] == config["veh_type"])
-    ].head(100)
+    ].head(500)
 
     ### Interprete calendar
     cal = input_tables["calendar.txt"].copy()
+    print(cal.info())
     cal["start_date"] = cal["start_date"].apply(
         lambda x: datetime.datetime.strptime(str(x), "%Y%m%d")
     )
@@ -71,6 +85,7 @@ def do_the_magic(config):
     )
 
     cal_exceptions = input_tables["calendar_dates.txt"].copy()
+    print(cal_exceptions.info())
     cal_exceptions["date"] = cal_exceptions["date"].apply(
         lambda x: datetime.datetime.strptime(str(x), "%Y%m%d")
     )
@@ -84,21 +99,68 @@ def do_the_magic(config):
         & (pit_dt <= cal["end_date"])
     ]
 
-    d1 = tr_df.merge(cal, how="inner", on="service_id").set_index("trip_id")
+    # Eindeutige service_id Werte in tr_df
+    tr_service_ids = set(tr_df["service_id"].unique())
+    print(f"Eindeutige service_id Werte in tr_df: {len(tr_service_ids)}")
+
+    # Eindeutige service_id Werte in cal
+    cal_service_ids = set(cal["service_id"].unique())
+    print(f"Eindeutige service_id Werte in cal: {len(cal_service_ids)}")
+
+    # Schnittmenge der service_id Werte
+    common_service_ids = tr_service_ids.intersection(cal_service_ids)
+
+    print(f"Gemeinsame service_id Werte: {len(common_service_ids)}")
+
+    try:
+        d1 = tr_df.merge(cal, how="inner", on="service_id").set_index("trip_id")
+        if d1.empty:
+            logger.error("Der resultierende DataFrame 'd1' ist leer .")
+            return
+    except KeyError as e:
+        logger.error(f"Fehlende Spalte beim Mergen: {e}")
+        return
+    except Exception as e:
+        logger.error(f"Fehler beim Mergen der DataFrames: {e}")
+        return
+
+    print(d1.info())
+    logger.info(f"{d1.info()}")
     d2 = tr_df.merge(cal_exceptions, how="inner", on="service_id").set_index("trip_id")
+    logger.info(f"{d1.info()}")
+    logger.info(f"{d2.info()}")
+
     # d1 = d1.append(d2.drop([ind for ind in d2.index if ind in d1.index]))
-    print(d1.shape, d2.shape)
+    logger.info(f"{d1.shape}, {d2.shape}")
 
     tr_df = tr_df.set_index("trip_id")
+    logger.info(f"{tr_df}")
     tr_df["valid"] = False
     tr_df.loc[d1.index] = True
     tr_df.loc[d2[d2["exception_type"] == 1].index, "valid"] = True
     tr_df.loc[d2[d2["exception_type"] == 2].index, "valid"] = False
 
+    # Setze den Index zurück, um trip_id wieder als Spalte zu haben, verschwindet vorher durch set_index
+
+    ########################################
+    ########################################
+    tr_df = tr_df.reset_index()
+    ########################################
+    ########################################
+
+    logger.info(f"{tr_df.info()}")
+
+    logger.info(f"{tr_df.columns}")
+    logger.info(f"{tr_df.head()}")
+
     ### Select BVG Bus-Services
     ts_df = tr_df[tr_df["valid"]].merge(
         input_tables["stop_times.txt"], on="trip_id", how="left"
     )
+    logger.info(f"{ts_df.columns}")
+    logger.info(f"{ts_df.head()}")
+    logger.info(f"{input_tables['stop_times.txt'].columns}")
+    logger.info(f"{input_tables['stop_times.txt'].head()}")
     ts_df["stop_id"] = ts_df["stop_id"].apply(str)
     str_df = (
         ts_df.merge(input_tables["stops.txt"], on="stop_id")
@@ -110,7 +172,7 @@ def do_the_magic(config):
         gr=str_df[str_df.columns].groupby("trip_id"),
         func=to_edge,
         name="2edges",
-        ncores=7,
+        ncores=1,
     )
     # sjdf = str_df.groupby('trip_id', as_index=False).apply(lambda x: to_edge(x))
 
@@ -118,11 +180,12 @@ def do_the_magic(config):
 
     ### $SERVICEJOURNEY
     ### $SERVICEJOURNEY:ID;LineID;FromStopID;ToStopID;DepTime;ArrTime;MinAheadTime;MinLayoverTime;VehTypeGroupID;MaxShiftBackwardSeconds;MaxShiftForwardSeconds;Distance
+    logger.info("Starting with Service Journey")
     sjdf["min_dwell"] = 0
     sjdf["min_ahead"] = 0
     sjdf["backshift"] = 0
     sjdf["forwardshift"] = 0
-
+    logger.info(f"{sjdf.columns}")
     servicejourney = sjdf.rename(
         columns={
             "trip_id": "ID",
@@ -148,6 +211,8 @@ def do_the_magic(config):
 
     ### $STOPPOINTS
     ### $STOPPOINT:ID;Code;Name;VehCapacityForCharging
+    logger.info("Creating with stoppoints")
+
     stoppoints = str_df[
         ["stop_id", "stop_code", "stop_name", "stop_lat", "stop_lon"]
     ].drop_duplicates()
@@ -183,7 +248,6 @@ def do_the_magic(config):
         ],
         axis=0,
     )
-
     stoppoints = pd.concat(
         [
             stoppoints,
@@ -285,6 +349,9 @@ def do_the_magic(config):
     # %%
     ### $LINE
     ### $LINE:ID;Code;Name
+
+    logger.info("Creating lines")
+
     line = str_df[["route_id", "route_short_name"]].drop_duplicates()
     line = line.rename(
         columns={
@@ -313,6 +380,8 @@ def do_the_magic(config):
     ].copy()
 
     # Create Deadhead matrix
+    logger.info("Creating deadhead matrix")
+
     sp_red["key"] = 1
     crossprod = sp_red.merge(sp_red, on="key")
 
@@ -375,10 +444,11 @@ def do_the_magic(config):
     crossprod.to_csv(
         os.path.join(config["out_directory"], "deadruntime.txt"), index=False, sep=";"
     )
-
     ### $CONNECTIONS
     ### $CONNECTIONS:FromStopID;ToStopID;FromLineID;ToLineID;MinTransferTime
     ### https://developers.google.com/transit/gtfs/reference/#transferstxt
+    logger.info("Creating connections matrix")
+
     connections = input_tables["transfers.txt"].copy()
     connections = connections[
         (connections["from_stop_id"].isin(stoppoints["ID"]))
@@ -400,11 +470,17 @@ def do_the_magic(config):
     ].to_csv(
         os.path.join(config["out_directory"], "connections.txt"), index=False, sep=";"
     )
+    logger.success("Instance is generated")
 
 
 if __name__ == "__main__":
     mp.freeze_support()
     with open("config.yaml", "r") as fh:
         config = yaml.load(fh, Loader=yaml.FullLoader)
+
+    if isinstance(config["veh_type"], list):
+        config["veh_type"] = [config["veh_type"]]
+    if isinstance(config["veh_type"], int):
+        logger.info(f"Der Vehicle Type ist {config['veh_type']}")
 
     do_the_magic(config)
