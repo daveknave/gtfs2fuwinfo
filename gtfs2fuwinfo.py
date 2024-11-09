@@ -72,7 +72,7 @@ def do_the_magic(config):
     tr_df = tr_df[
         (tr_df["agency_id"] == config["agency"])
         & (tr_df["route_type"] == config["veh_type"])
-    ].head(500)
+    ].head(1000)
 
     ### Interprete calendar
     cal = input_tables["calendar.txt"].copy()
@@ -394,17 +394,23 @@ def do_the_magic(config):
     ].apply(lambda x: ",".join([str(x["Lat_y"]), str(x["Lon_y"])]), axis=1)
 
     page = 0
-    while (page + 1) * 100 < od_matrix.shape[0]:
-        print((page) * 100, (page + 1) * 100, od_matrix.shape[0])
+    while page * 100 < od_matrix.shape[0]:
+
+        lower_bound_df_subset: int = page * 100
+        upper_bound_df_subset: int = min((page + 1) * 100, od_matrix.shape[0])
+
+        logger.info(
+            f"Next subset for matrix hereAPI: {lower_bound_df_subset} to {upper_bound_df_subset}"
+        )
+
         tmp_df = drt.run_matrix_request(
-            od_matrix.iloc[
-                page * 100 : min(od_matrix.shape[0] - 1 - page * 100, (page + 1) * 100)
-            ],
-            config["point_in_time"] + "T12:00:00",
+            od_matrix.iloc[lower_bound_df_subset:upper_bound_df_subset],
+            config["point_in_time"] + "T12:00:00Z",
             config["here_key"],
         )
-        print(tmp_df)
+
         page += 1
+
     real_routes = crossprod[crossprod["ID_x"] != crossprod["ID_y"]].apply(
         lambda x: pd.Series(
             drt.run_request(
