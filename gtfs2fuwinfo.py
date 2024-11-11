@@ -13,6 +13,7 @@ import multiprocessing as mp
 import haversine
 import yaml
 from loguru import logger
+import write_instance
 
 
 def to_edge(x, g=None):
@@ -72,7 +73,7 @@ def do_the_magic(config):
     tr_df = tr_df[
         (tr_df["agency_id"] == config["agency"])
         & (tr_df["route_type"] == config["veh_type"])
-    ].head(1000)
+    ].head(5000)
 
     ### Interprete calendar
     cal = input_tables["calendar.txt"].copy()
@@ -490,3 +491,4 @@ if __name__ == "__main__":
         logger.info(f"Der Vehicle Type ist {config['veh_type']}")
 
     do_the_magic(config)
+    write_instance()

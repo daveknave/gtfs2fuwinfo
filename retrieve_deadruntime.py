@@ -42,7 +42,6 @@ def run_matrix_request(od_matrix, dep_time, key):
     url = f"https://matrix.router.hereapi.com/v8/matrix?apiKey={key}&async=false"
 
     headers = {"Content-Type": "application/json"}
-    print(od_matrix.head())
     data = {
         # "regionDefinition": {"type": "circle"}, ##########
         "transportMode": "bus",
@@ -67,11 +66,47 @@ def run_matrix_request(od_matrix, dep_time, key):
     here_req = req.post(url, headers=headers, json=data)
     if here_req.status_code == 200:
         response_data = here_req.json()
-        print(response_data)
         return pd.DataFrame(response_data["matrix"]["travelTimes"])
     else:
-        print(here_req.url)
-        print(here_req.content)
+        logger.error(here_req.url)
+        logger.error(here_req.content)
+
+    time.sleep(1)
+    return None
+
+
+def run_matrix_request_get(od_matrix, dep_time, key):
+    url = f"https://matrix.router.hereapi.com/v8/matrix?apiKey={key}&async=false"
+
+    headers = {"Content-Type": "application/json"}
+    data = {
+        # "regionDefinition": {"type": "circle"}, ##########
+        "transportMode": "bus",
+        "matrixAttributes": ["travelTimes", "distances"],
+        "regionDefinition": {
+            "type": "circle",
+            "center": {"lat": 52.497225, "lng": 13.395195},
+            "radius": 17900,
+        },
+        # "return": ["summary"],
+        "departureTime": dep_time,
+        "origins": [
+            {"lat": float(start.split(",")[0]), "lng": float(start.split(",")[1])}
+            for start in od_matrix["start"]
+        ],
+        "destinations": [
+            {"lat": float(dest.split(",")[0]), "lng": float(dest.split(",")[1])}
+            for dest in od_matrix["destination"]
+        ],
+    }
+
+    here_req = req.get(url, headers=headers, json=data)
+    if here_req.status_code == 200:
+        response_data = here_req.json()
+        return pd.DataFrame(response_data["matrix"]["travelTimes"])
+    else:
+        logger.error(here_req.url)
+        logger.error(here_req.content)
 
     time.sleep(1)
     return None
