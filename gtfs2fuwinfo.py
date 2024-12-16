@@ -2,24 +2,21 @@
 import pandas as pd
 import os, importlib, datetime
 import pargroupby
-
-# importlib.reload(pargroupby)
 from scipy.spatial.distance import hamming, euclidean
-
 import retrieve_deadruntime as drt
-
-# importlib.reload(drt)
 import multiprocessing as mp
-import haversine
+from haversine import haversine, Unit
 import yaml
 from loguru import logger
-import write_instance
+from write_instance import write_instance
+import time
+import os
 
 
 def to_edge(x, g=None):
     path_dist = 0
     for pt in range(x.shape[0] - 1):
-        path_dist += haversine.haversine(
+        path_dist += haversine(
             list(x.loc[:, ["stop_lat", "stop_lon"]].iloc[pt]),
             list(x.loc[:, ["stop_lat", "stop_lon"]].iloc[pt + 1]),
         )
@@ -73,7 +70,7 @@ def do_the_magic(config):
     tr_df = tr_df[
         (tr_df["agency_id"] == config["agency"])
         & (tr_df["route_type"] == config["veh_type"])
-    ].head(5000)
+    ].head(700)
 
     ### Interprete calendar
     cal = input_tables["calendar.txt"].copy()
@@ -347,7 +344,7 @@ def do_the_magic(config):
     stoppoints.to_csv(
         os.path.join(config["out_directory"], "stoppoints.txt"), index=False, sep=";"
     )
-    # %%
+
     ### $LINE
     ### $LINE:ID;Code;Name
 
@@ -363,7 +360,6 @@ def do_the_magic(config):
     line["Name"] = line["Code"]
     line.to_csv(os.path.join(config["out_directory"], "line.txt"), index=False, sep=";")
 
-    # %%
     ### $DEADRUNTIME
     ### $DEADRUNTIME:FromStopID;ToStopID;FromTime;ToTime;Distance;RunTime
 
@@ -382,8 +378,10 @@ def do_the_magic(config):
 
     # Create Deadhead matrix
     logger.info("Creating deadhead matrix")
-
     sp_red["key"] = 1
+
+    print(sp_red.info())
+    print(sp_red.head())
     crossprod = sp_red.merge(sp_red, on="key")
 
     od_matrix = pd.DataFrame(columns=["start", "destination"])
@@ -394,11 +392,13 @@ def do_the_magic(config):
         crossprod["ID_x"] != crossprod["ID_y"], :
     ].apply(lambda x: ",".join([str(x["Lat_y"]), str(x["Lon_y"])]), axis=1)
 
+    ##### FILTER OUT TOO CLOSE POINTS, too avoid HereAPI error
     page = 0
-    while page * 100 < od_matrix.shape[0]:
+    real_routes = pd.DataFrame(columns=od_matrix.columns)
+    while page * 50 < od_matrix.shape[0]:
 
-        lower_bound_df_subset: int = page * 100
-        upper_bound_df_subset: int = min((page + 1) * 100, od_matrix.shape[0])
+        lower_bound_df_subset: int = page * 50
+        upper_bound_df_subset: int = min((page + 1) * 50, od_matrix.shape[0])
 
         logger.info(
             f"Next subset for matrix hereAPI: {lower_bound_df_subset} to {upper_bound_df_subset}"
@@ -409,34 +409,20 @@ def do_the_magic(config):
             config["point_in_time"] + "T12:00:00Z",
             config["here_key"],
         )
+        real_routes = pd.concat([real_routes, tmp_df], ignore_index=True)
 
         page += 1
 
-    real_routes = crossprod[crossprod["ID_x"] != crossprod["ID_y"]].apply(
-        lambda x: pd.Series(
-            drt.run_request(
-                ",".join([str(x["Lat_x"]), str(x["Lon_x"])]),
-                ",".join([str(x["Lat_y"]), str(x["Lon_y"])]),
-                config["point_in_time"] + "T12:00:00",
-                config["here_key"],
-            )
-        ),
-        axis=1,
-    )
+    real_routes["RunTime"] = real_routes["RunTime"].astype(int)
+    real_routes["Distance"] = real_routes["Distance"].astype(int)
     crossprod = pd.concat([crossprod, real_routes], axis=1)
-
-    # fake_routes = crossprod[crossprod['ID_x'] != crossprod['ID_y']]\
-    #     .apply(lambda x: haversine.haversine([x['Lat_x'],x['Lon_x']],[x['Lat_y'],x['Lon_y']], unit=haversine.Unit.METERS), axis=1)
-    # fake_routes.name = 'length'
-    # crossprod = pd.concat([crossprod,fake_routes], axis=1)
-    crossprod["duration"] = 60 * crossprod["length"] / 25
 
     crossprod = crossprod.rename(
         columns={
             "ID_x": "FromStopID",
             "ID_y": "ToStopID",
-            "length": "Distance",
-            "duration": "RunTime",
+            "distance": "Distance",
+            "travel_time": "RunTime",
         }
     )
     crossprod["FromTime"] = 0
@@ -481,14 +467,11 @@ def do_the_magic(config):
 
 
 if __name__ == "__main__":
+    start = time.time()
     mp.freeze_support()
     with open("config.yaml", "r") as fh:
         config = yaml.load(fh, Loader=yaml.FullLoader)
 
-    if isinstance(config["veh_type"], list):
-        config["veh_type"] = [config["veh_type"]]
-    if isinstance(config["veh_type"], int):
-        logger.info(f"Der Vehicle Type ist {config['veh_type']}")
-
     do_the_magic(config)
     write_instance()
+    logger.info(f"Duration of generating input: {time.time() -start} seconds")
