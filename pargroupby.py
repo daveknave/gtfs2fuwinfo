@@ -22,20 +22,22 @@ def append_result(res_):
     out_li.append(res_)
 
 def error_occurred(e):
-    raise(e)
     print("-->{}<--".format(e))
+    raise(e)
 
 # parralel groupby
-def do(gr, func, name = 'Multi Process', ncores = 1, args_dict = {}):
-    global total_groups
+def do(gr, func, name = 'Multi Process', ncores = mp.cpu_count, args_dict = {}):
+    global total_groups, out_li
+    out_li = []
 
     print('Parellel group apply started ...')
     pool = mp.Pool(ncores)
     pool.name = name
     total_groups = len(gr.groups)
     for g in gr.groups:
-        res_ = pool.apply_async(func, [gr.get_group(g), g], args_dict, append_result, error_occurred)
+        args_dict.update({'index' : g})
+        res_ = pool.apply_async(func, [gr.get_group(g)], args_dict, append_result, error_occurred)
 
     pool.close()
     pool.join()
-    return(pd.DataFrame(data=out_li))
+    return pd.DataFrame(data=out_li)

@@ -1,21 +1,33 @@
-#! /usr/bin/python3.8
+#! /usr/bin/python3.11
+import statistics
+
+import numpy as np
 import pandas as pd
 import os, importlib, datetime
+
+from shapely.ops import orient
+
 import pargroupby
 importlib.reload(pargroupby)
-from scipy.spatial.distance import hamming, euclidean
 
+from shapely.geometry import MultiPoint
 import retrieve_deadruntime as drt
 importlib.reload(drt)
 import multiprocessing as mp
-import haversine
 import yaml
 
-def to_edge(x, g=None):
+def to_edge(x, **args):
     path_dist = 0
-    for pt in range(x.shape[0] - 1):
-        path_dist += haversine.haversine(list(x.loc[:, ['stop_lat', 'stop_lon']].iloc[pt]),
-                               list(x.loc[:, ['stop_lat', 'stop_lon']].iloc[pt + 1]))
+    locations = pd.DataFrame(x.loc[:, ['stop_lon', 'stop_lat']].round(6).astype(str).apply(lambda a:','.join(a), axis=1), columns=['start'])
+    locations.loc[:,'ID'] = x['ID']
+    locations.drop_duplicates(subset='ID', keep='last', inplace=True)
+
+    distances = drt.run_matrix_request(locations)
+    for pt in range(locations.shape[0] - 2):
+        tmp_distance = distances.loc[(distances['start'] == locations.iloc[pt]['ID']) &
+            (distances['dest'] == locations.iloc[pt+1]['ID']), 'distances'].iloc[0]
+
+        path_dist += tmp_distance
 
     return pd.Series({
         'service_id': x['service_id'].iloc[0],
@@ -26,9 +38,15 @@ def to_edge(x, g=None):
         'to': x['stop_id'].iloc[-1],
         'arr': x['arrival_time'].iloc[-1],
         'vehicle_type': x['route_type'].iloc[0],
-        'distance': path_dist
+        'distance': round(path_dist,0)
     })
 # %%
+def find_center_coordinates(a):
+    if a.shape[0] < 2: return a[['stop_lat', 'stop_lon']]
+    poly = MultiPoint(a[['stop_lat', 'stop_lon']].to_dict(orient='split')['data'])
+    cent = poly.centroid
+    return pd.DataFrame({'stop_lat': [cent.x], 'stop_lon': [cent.y]})
+
 
 def do_the_magic(config):
     global to_edge
@@ -43,7 +61,7 @@ def do_the_magic(config):
 
     ### Prepare data
     tr_df = input_tables['trips.txt'].merge(input_tables['routes.txt'], on='route_id')
-    tr_df = tr_df[(tr_df['agency_id'] == config['agency']) & (tr_df['route_type'] == config['veh_type'])].head(100)
+    tr_df = tr_df[(tr_df['agency_id'] == config['agency']) & (tr_df['route_type'] == config['veh_type'])]
 
     ### Interprete calendar
     cal = input_tables['calendar.txt'].copy()
@@ -61,24 +79,52 @@ def do_the_magic(config):
 
     d1 = tr_df.merge(cal, how='inner', on='service_id').set_index('trip_id')
     d2 = tr_df.merge(cal_exceptions, how='inner', on='service_id').set_index('trip_id')
-    # d1 = d1.append(d2.drop([ind for ind in d2.index if ind in d1.index]))
     print(d1.shape, d2.shape)
 
     tr_df = tr_df.set_index('trip_id')
     tr_df['valid'] = False
-    tr_df.loc[d1.index] = True
+    tr_df.loc[d1.index,'valid'] = True
     tr_df.loc[d2[d2['exception_type'] == 1].index, 'valid'] = True
     tr_df.loc[d2[d2['exception_type'] == 2].index, 'valid'] = False
 
-    ### Select BVG Bus-Services
+    ### Select bus services
     ts_df = tr_df[tr_df['valid']].merge(input_tables['stop_times.txt'], on='trip_id', how='left')
-    ts_df['stop_id'] = ts_df['stop_id'].apply(str)
-    str_df = ts_df.merge(input_tables['stops.txt'], on='stop_id').drop_duplicates().sort_values(['trip_id', 'stop_sequence'])
 
-    sjdf = pargroupby.do(gr=str_df[str_df.columns].groupby('trip_id'), func=to_edge, name='2edges', ncores=7)
-    # sjdf = str_df.groupby('trip_id', as_index=False).apply(lambda x: to_edge(x))
+    stp_df = input_tables['stops.txt']
+    stp_df.loc[:,'ID'] = stp_df.apply(lambda a: a['stop_id'] if ':' in a['stop_id'] else a['parent_station'], axis=1)
+    stp_df.loc[np.logical_not(stp_df['ID'].isna()),'ID'] = stp_df.loc[np.logical_not(stp_df['ID'].isna()),'ID'].apply(lambda a: a.split(':')[2])
+    stp_df.loc[stp_df['ID'].isna(),'ID'] = stp_df.loc[stp_df['ID'].isna(),'stop_id']
+
+    tmp_stp_df = stp_df.set_index('ID')
+    # tmp_stp_df.loc[:,['stop_lat', 'stop_lon']] = pargroupby.do(gr=stp_df.groupby('ID'), func=find_center_coordinates, name='coords', ncores=8)
+    tmp_stp_df.loc[:,['stop_lat', 'stop_lon']] = stp_df.groupby('ID').apply(lambda a: find_center_coordinates(a)).reset_index().set_index('ID')[['stop_lat', 'stop_lon']]
+    stp_df = tmp_stp_df.reset_index()
+
+    ### Create stoppoint ID translation table
+    tmp_dict = stp_df[['stop_id', 'ID']].to_dict(orient='list')
+    stoppoints_translation = dict(zip(tmp_dict['stop_id'], tmp_dict['ID']))
+
+    str_df = ts_df.merge(stp_df, how="left", on='stop_id').drop_duplicates().sort_values(['trip_id', 'stop_sequence'])
+
+    sjdf = pargroupby.do(gr=str_df[str_df.columns].groupby('trip_id'), func=to_edge, name='2edges', ncores=8)
 
     ### Generate Output-Data
+
+    ### $STOPPOINTS
+    ### $STOPPOINT:ID;Code;Name;VehCapacityForCharging
+    stoppoints = str_df[['ID', 'stop_code','stop_name','stop_lat','stop_lon']].drop_duplicates()
+
+    stoppoints = stoppoints.rename(columns={
+        'stop_id'        : 'ID',
+        'stop_code'      : 'Code',
+        'stop_name'      : 'Name',
+        'stop_lat'      : 'Lat',
+        'stop_lon'      : 'Lon',
+    })
+    stoppoints['VehCapacityForCharging'] = 0
+
+    stoppoints.to_csv(os.path.join(config['out_directory'],'stoppoints.txt'), index=False, sep=';')
+
 
     ### $SERVICEJOURNEY
     ### $SERVICEJOURNEY:ID;LineID;FromStopID;ToStopID;DepTime;ArrTime;MinAheadTime;MinLayoverTime;VehTypeGroupID;MaxShiftBackwardSeconds;MaxShiftForwardSeconds;Distance
@@ -101,81 +147,11 @@ def do_the_magic(config):
         'forwardshift'  : 'MaxShiftForwardSeconds',
         'distance'      : 'Distance',
     })
+    servicejourney.drop(columns=['service_id'], inplace=True)
+    servicejourney[['FromStopID', 'ToStopID']] = servicejourney[['FromStopID', 'ToStopID']].replace(stoppoints_translation)
 
     servicejourney.to_csv(os.path.join(config['out_directory'],'servicejourney.txt'), index=False, sep=';')
 
-    ### $STOPPOINTS
-    ### $STOPPOINT:ID;Code;Name;VehCapacityForCharging
-    stoppoints = str_df[['stop_id', 'stop_code', 'stop_name', 'stop_lat', 'stop_lon']].drop_duplicates()
-
-    stoppoints = stoppoints.rename(columns={
-        'stop_id'        : 'ID',
-        'stop_code'      : 'Code',
-        'stop_name'      : 'Name',
-        'stop_lat'      : 'Lat',
-        'stop_lon'      : 'Lon',
-    })
-    stoppoints['VehCapacityForCharging'] = 0
-
-    ### https://www.berlinstadtservice.de/xinh/Bus_Betriebshof_Berlin.html
-    ### Add depots
-    stoppoints = pd.concat([stoppoints, pd.DataFrame([{
-        'ID'    : 900000000001,
-        'Code'  : 'DEPOT',
-        'Name'  : 'Betriebshof Weißensee',
-        'Lat'   : 52.545699,
-        'Lon'   : 13.468622,
-        'VehCapacityForCharging' : 120
-    }])], axis=0)
-
-    stoppoints = pd.concat([stoppoints, pd.DataFrame([{
-        'ID'    : 900000000002,
-        'Code'  : 'DEPOT',
-        'Name'  : 'Betriebshof Lichtenberg',
-        'Lat'   : 52.519746,
-        'Lon'   : 13.499957,
-        'VehCapacityForCharging' : 50
-    }])], axis=0)
-
-    stoppoints = pd.concat([stoppoints, pd.DataFrame([{
-        'ID'    : 900000000003,
-        'Code'  : 'DEPOT',
-        'Name'  : 'Betriebshof Wedding',
-        'Lat'   : 52.552370,
-        'Lon'   : 13.349366,
-        'VehCapacityForCharging' : 120
-    }])], axis=0)
-
-    stoppoints = pd.concat([stoppoints, pd.DataFrame([{
-        'ID'    : 900000000004,
-        'Code'  : 'DEPOT',
-        'Name'  : 'Betriebshof Spandau',
-        'Lat'   : 52.517266,
-        'Lon'   : 13.183191,
-        'VehCapacityForCharging' : 120
-    }])], axis=0)
-
-    stoppoints = pd.concat([stoppoints, pd.DataFrame([{
-        'ID'    : 900000000005,
-        'Code'  : 'DEPOT ',
-        'Name'  : 'Betriebshof Neukölln',
-        'Lat'   : 52.453568,
-        'Lon'   : 13.422036,
-        'VehCapacityForCharging' : 120
-
-    }])], axis=0)
-
-    stoppoints = pd.concat([stoppoints, pd.DataFrame([{
-        'ID'    : 900000000006,
-        'Code'  : 'DEPOT',
-        'Name'  : 'Betriebshof Wilmersdorf',
-        'Lat'   : 52.494360,
-        'Lon'   : 13.301960,
-        'VehCapacityForCharging' : 120
-
-    }])], axis=0)
-
-    stoppoints.to_csv(os.path.join(config['out_directory'],'stoppoints.txt'), index=False, sep=';')
     # %%
     ### $LINE
     ### $LINE:ID;Code;Name
@@ -190,54 +166,31 @@ def do_the_magic(config):
     # %%
     ### $DEADRUNTIME
     ### $DEADRUNTIME:FromStopID;ToStopID;FromTime;ToTime;Distance;RunTime
-
-    stoppoints = pd.read_csv(os.path.join(config['out_directory'],'stoppoints.txt'), sep=';')
-
-    sjdf = pd.read_csv(os.path.join(config['out_directory'],'servicejourney.txt'), sep=';')
-    sp_red = stoppoints[(stoppoints['ID'].isin(sjdf['FromStopID'])) | (stoppoints['ID'].isin(sjdf['ToStopID'])) | (stoppoints['Code'] == 'DEPOT')]
+    sp_red = stoppoints[(stoppoints['ID'].isin(servicejourney['FromStopID'])) | (stoppoints['ID'].isin(servicejourney['ToStopID'])) | (stoppoints['Code'] == 'DEPOT')]
 
     # Create Deadhead matrix
     sp_red['key'] = 1
-    crossprod = sp_red.merge(sp_red, on="key")
+    deadruntimes = sp_red.merge(sp_red, on="key")
 
-    od_matrix = pd.DataFrame(columns=['start', 'destination'])
-    od_matrix['start'] = crossprod.loc[crossprod['ID_x'] != crossprod['ID_y'], :].apply(lambda x: ','.join([str(x['Lat_x']),str(x['Lon_x'])]), axis=1)
-    od_matrix['destination'] = crossprod.loc[crossprod['ID_x'] != crossprod['ID_y'], :].apply(lambda x: ','.join([str(x['Lat_y']),str(x['Lon_y'])]), axis=1)
+    locations = pd.DataFrame(columns=['start', 'ID'])
+    locations['start'] = (deadruntimes.loc[deadruntimes['ID_x'] != deadruntimes['ID_y'], :].apply(lambda x: ','.join([str(x['Lon_x']),str(x['Lat_x'])]), axis=1)).unique()
+    locations['ID'] = deadruntimes['ID_x']
 
-    page = 0
-    while (page+1)*100 < od_matrix.shape[0]:
-        print((page)*100, (page+1)*100, od_matrix.shape[0])
-        tmp_df = drt.run_matrix_request(
-            od_matrix.iloc[page*100:min(od_matrix.shape[0]-1-page*100, (page+1)*100)],
-            config['point_in_time'] + 'T12:00:00',
-            config['here_key']
-        )
-        print(tmp_df)
-        page += 1
-    # real_routes = crossprod[crossprod['ID_x'] != crossprod['ID_y']]\
-    #     .apply(lambda x: pd.Series(drt.run_request(','.join([str(x['Lat_x']),str(x['Lon_x'])]),
-    #                                                ','.join([str(x['Lat_y']),str(x['Lon_y'])]),
-    #                                                config['point_in_time'] + 'T12:00:00',
-    #                                                config['here_key']
-    #                                                )), axis=1)
-    crossprod = pd.concat([crossprod,real_routes], axis=1)
+    real_routes = drt.run_matrix_request(locations)
+    deadruntimes = pd.concat([deadruntimes,real_routes], axis=1)
 
-    # fake_routes = crossprod[crossprod['ID_x'] != crossprod['ID_y']]\
-    #     .apply(lambda x: haversine.haversine([x['Lat_x'],x['Lon_x']],[x['Lat_y'],x['Lon_y']], unit=haversine.Unit.METERS), axis=1)
-    # fake_routes.name = 'length'
-    # crossprod = pd.concat([crossprod,fake_routes], axis=1)
-    crossprod['duration'] = 60 * crossprod['length'] / 25
-
-    crossprod = crossprod.rename(columns={
+    deadruntimes = deadruntimes.rename(columns={
         'ID_x'          : 'FromStopID',
         'ID_y'          : 'ToStopID',
-        'length'        : 'Distance',
-        'duration'      : 'RunTime',
+        'distances'     : 'Distance',
+        'durations'     : 'RunTime',
     })
-    crossprod['FromTime'] = 0
-    crossprod['ToTime'] = 0
-    crossprod = crossprod[['FromStopID','ToStopID','FromTime','ToTime','Distance','RunTime']].drop_duplicates().dropna()
-    crossprod.to_csv(os.path.join(config['out_directory'],'deadruntime.txt'), index=False, sep=';')
+    deadruntimes['FromTime'] = 0
+    deadruntimes['ToTime'] = 3600*32
+
+    deadruntimes[['FromStopID', 'ToStopID']] = deadruntimes[['FromStopID', 'ToStopID']].replace(stoppoints_translation)
+    deadruntimes = deadruntimes[['FromStopID','ToStopID','FromTime','ToTime','Distance','RunTime']].drop_duplicates().dropna()
+    deadruntimes.to_csv(os.path.join(config['out_directory'],'deadruntime.txt'), index=False, sep=';')
 
     ### $CONNECTIONS
     ### $CONNECTIONS:FromStopID;ToStopID;FromLineID;ToLineID;MinTransferTime
@@ -254,10 +207,11 @@ def do_the_magic(config):
     })
     connections[['FromStopID','ToStopID','FromLineID','ToLineID','MinTransferTime']].to_csv(os.path.join(config['out_directory'],'connections.txt'), index=False, sep=';')
 
+    return stoppoints, servicejourney, line, connections, deadruntimes
 
 if __name__ == '__main__':
     mp.freeze_support()
     with open('config.yaml', 'r') as fh:
         config = yaml.load(fh, Loader=yaml.FullLoader)
 
-    do_the_magic(config)
+    stoppoints, servicejourney, line, connections, deadruntimes = do_the_magic(config)

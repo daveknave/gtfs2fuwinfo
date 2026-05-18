@@ -2,22 +2,18 @@ import requests as req
 import pandas as pd
 import json, yaml
 import time
+from io import StringIO
 
-def run_request(point_from, point_to, dep_time, key):
+def run_request(point_from, point_to):
     fields = {
-        'origin': point_from,
-        'destination': point_to,
-        'transportMode': 'bus',
-        'apikey': key,
-        'summaryAttributes': 'traveltime ,distance',
-        'departureTime': dep_time
+        # 'continue_straight': 'true',
+        'annotations' : 'distance'
     }
-
-    here_req = req.get('https://router.hereapi.com/v8/routes', fields)
+    here_req = req.get(f'http://router.project-osrm.org/route/v1/driving/{point_from};{point_to}', fields)
 
 
     if here_req.status_code == 200:
-        return json.loads(here_req.content)['routes'][0]['sections'][0]['summary']
+        return json.loads(here_req.content)['routes'][0]['distance']
     else:
         print(here_req.url)
         print(here_req.content)
@@ -25,25 +21,51 @@ def run_request(point_from, point_to, dep_time, key):
     time.sleep(1)
     return None
 
-def run_matrix_request(od_matrix, dep_time, key):
-    fields = {
-        'transportMode': 'bus',
-        'apikey': key,
-        'return': 'summary',
-        'departureTime': dep_time
-    }
-
-    fields.update(dict(zip(['start'+str(i) for i in range(od_matrix.shape[0])], od_matrix['start'].tolist())))
-    fields.update(dict(zip(['destination'+str(i) for i in range(od_matrix.shape[0])], od_matrix['destination'].tolist())))
-
-    here_req = req.get('https://matrix.route.ls.hereapi.com/routing/7.2/calculatematrix.json', fields)
-
-
-    if here_req.status_code == 200:
-        return pd.DataFrame(json.loads(here_req.content)['response']['matrixEntry']['summary'])
+def run_matrix_request(locations, *args):
+    if len(args) > 0:
+        fields = args[0]
     else:
-        print(here_req.url)
-        print(here_req.content)
+        fields = {
+            'annotations': 'duration,distance',
+        }
+
+    start_list_string = ';'.join(locations['start'].tolist())
+
+    osrm_req = req.get(f'http://router.project-osrm.org/table/v1/driving/{start_list_string}', fields)
+
+    if osrm_req.status_code == 200:
+        print(osrm_req.url)
+        json_data = json.loads(osrm_req.content)
+        json_data.pop('code')
+        response_data_df = pd.DataFrame(json_data)
+
+        durations_df = response_data_df['durations']
+        durations_df = durations_df.apply(lambda a: pd.Series(a))
+        durations_df = durations_df.unstack().reset_index().rename(
+            columns={0: 'durations', 'level_0': 'start', 'level_1': 'dest'})
+
+        distances_df = response_data_df['distances']
+        distances_df = distances_df.apply(lambda a: pd.Series(a))
+        distances_df = distances_df.unstack().reset_index().rename(
+            columns={0: 'distances', 'level_0': 'start', 'level_1': 'dest'})
+
+        sources_df = response_data_df['sources']
+        sources_df = sources_df.apply(lambda a: pd.Series(a))
+
+        complete = durations_df.merge(
+            distances_df,
+            how='inner', on=['start', 'dest'])
+
+        # complete = complete.loc[complete['start'] != complete['dest']]
+
+        complete[['start', 'dest']] = complete[['start', 'dest']].replace(locations['ID'].reset_index(drop=True).to_dict())
+
+        complete.to_csv('distances.csv', index=False)
+
+        return complete
+    else:
+        print(osrm_req.url)
+        print(osrm_req.content)
 
     time.sleep(1)
     return None
@@ -53,5 +75,4 @@ if __name__ == '__main__':
 
     with open('config.yaml', 'r') as fh:
         config = yaml.load(fh, Loader=yaml.FullLoader)
-    result = run_request('52.5308,13.3847', '52.5323,13.3789', '2023-03-24T10:30:00', config['here_key'])
     print(result)
