@@ -2,7 +2,7 @@ import yaml
 import pandas as pd
 import os, io
 
-def main(config):
+def merge_output_data(config):
     files = {
         '$STOPPOINTS:':     'stoppoints.txt',
         '$LINE:':           'line.txt',
@@ -43,7 +43,7 @@ def main(config):
     )
 
 if __name__ == '__main__':
-    with open('config.yaml', 'r') as fh:
+    with open('../config.yaml', 'r') as fh:
         config = yaml.load(fh, Loader=yaml.FullLoader)
 
-    main(config)
+    merge_output_data(config)

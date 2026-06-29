@@ -30,7 +30,7 @@ def do(gr, func, name = 'Multi Process', ncores = mp.cpu_count, args_dict = {}):
     global total_groups, out_li
     out_li = []
 
-    print('Parellel group apply started ...')
+    print(f'Parellel group apply process "{name}" with {ncores} cores started ...')
     pool = mp.Pool(ncores)
     pool.name = name
     total_groups = len(gr.groups)

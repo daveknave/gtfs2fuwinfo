@@ -1,5 +1,16 @@
-point_in_time: "2026-05-29"
-in_directory: data
-out_directory: output
-agency: 84
-veh_type: 700
+point_in_time:  "2026-05-29"
+in_directory:   data
+out_directory:  output
+#agency:         32
+#agency:         138
+agency:         796 #BVG
+#agency:         516
+#agency:         241
+#agency:         816
+#agency:         150
+#agency:         341
+#agency:         92
+#agency:         32,138,516,241,816,150,341,92
+veh_type:       700
+debug:          1
+parallel:       1

@@ -21,20 +21,19 @@ def run_request(point_from, point_to):
     time.sleep(1)
     return None
 
-def run_matrix_request(locations, *args):
-    if len(args) > 0:
-        fields = args[0]
-    else:
-        fields = {
-            'annotations': 'duration,distance',
-        }
+def run_matrix_request(locations, **args):
+    fields = {
+        'annotations': 'duration,distance'
+    }
+    if 'get_params' in args:
+        fields.update(args)
 
     start_list_string = ';'.join(locations['start'].tolist())
 
     osrm_req = req.get(f'http://router.project-osrm.org/table/v1/driving/{start_list_string}', fields)
 
     if osrm_req.status_code == 200:
-        print(osrm_req.url)
+        # print(osrm_req.url)
         json_data = json.loads(osrm_req.content)
         json_data.pop('code')
         response_data_df = pd.DataFrame(json_data)
@@ -49,18 +48,13 @@ def run_matrix_request(locations, *args):
         distances_df = distances_df.unstack().reset_index().rename(
             columns={0: 'distances', 'level_0': 'start', 'level_1': 'dest'})
 
-        sources_df = response_data_df['sources']
-        sources_df = sources_df.apply(lambda a: pd.Series(a))
-
         complete = durations_df.merge(
             distances_df,
             how='inner', on=['start', 'dest'])
 
-        # complete = complete.loc[complete['start'] != complete['dest']]
-
         complete[['start', 'dest']] = complete[['start', 'dest']].replace(locations['ID'].reset_index(drop=True).to_dict())
 
-        complete.to_csv('distances.csv', index=False)
+        # complete.to_csv('distances.csv', index=False)
 
         return complete
     else:
@@ -73,6 +67,6 @@ def run_matrix_request(locations, *args):
 if __name__ == '__main__':
     print('Function testing')
 
-    with open('config.yaml', 'r') as fh:
+    with open('../config.yaml', 'r') as fh:
         config = yaml.load(fh, Loader=yaml.FullLoader)
-    print(result)
+

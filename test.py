@@ -1,27 +1,28 @@
+import math
+import os
+from itertools import combinations
+
+import numpy as np
+import yaml
+
 import pandas as pd
+import networkx as nx
 
-df = pd.read_pickle('tmp_response_date.pickle')
+with open('config.yaml', 'r') as fh:
+    config = yaml.load(fh, Loader=yaml.FullLoader)
 
-durations_df = df['durations']
-durations_df = durations_df.apply(lambda a: pd.Series(a))
-durations_df = durations_df.unstack().reset_index().rename(columns={0: 'durations', 'level_0': 'start','level_1': 'dest'})
+# 10801
+input_tables = {}
+for file_name in os.listdir(config['in_directory']):
+    if ".txt" not in file_name:
+        continue
+    input_tables[file_name] = pd.read_csv(
+        os.path.join(config['in_directory'], file_name),
+        delimiter=",",
+        decimal=".",
+        quotechar='"',
+    )
 
-distances_df = df['distances']
-distances_df = distances_df.apply(lambda a: pd.Series(a))
-distances_df = distances_df.unstack().reset_index().rename(columns={0: 'distance', 'level_0': 'start','level_1': 'dest'})
-
-sources_df = df['sources']
-sources_df = sources_df.apply(lambda a: pd.Series(a))
-
-
-complete = durations_df.merge(
-    distances_df,
-    how='inner', on=['start', 'dest'])
-
-complete = complete.loc[complete['start'] != complete['dest']]
-
-complete = complete[['start', 'dest']].replace(
-    sources_df['location'].map(lambda a: ','.join([str(k) for k in a])).to_dict()
-)
-
-# complete.loc[:,['Lon','Lat']] = (sources_df['location'].apply(lambda a: pd.Series((a[0],a[1]))).rename(columns={0: 'Lon', 1: 'Lat'}))
+depots = pd.read_csv(os.path.join(config['in_directory'], "vbb_depots.csv"), sep=";", decimal=",")
+#%%
+shapes_df = input_tables['shapes.txt']
